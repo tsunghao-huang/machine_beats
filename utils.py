@@ -8,11 +8,13 @@ class MidiProcessor:
     def __init__(self, midi_dir):
         
         self.midi_dir = midi_dir
-        self.meta_track = MidiFile(self.midi_dir).tracks[0]
-        self.main_track = MidiFile(self.midi_dir).tracks[1]
-        self.meta_ind = [i for i, m in enumerate(self.meta_track) if 'numerator' in m.dict()][0]
-        self.numerator = self.meta_track[self.meta_ind].numerator
-        self.denominator = self.meta_track[self.meta_ind].denominator
+#        self.meta_track = MidiFile(self.midi_dir).tracks[0]
+        
+        # adjust to read midi that has no meta_message
+        self.main_track = MidiFile(self.midi_dir).tracks[0]
+#        self.meta_ind = [i for i, m in enumerate(self.meta_track) if 'numerator' in m.dict()][0]
+#        self.numerator = self.meta_track[self.meta_ind].numerator
+#        self.denominator = self.meta_track[self.meta_ind].denominator
         self.ticks_per_beat = MidiFile(self.midi_dir).ticks_per_beat
         self.ticks_per_32nt = self.ticks_per_beat/8
         
@@ -131,13 +133,13 @@ def concat_all_midi_to_df(root_dir = './groove/', return_loops_len_list=True):
     
     # loop through all the midis in provided root_dir and create df
     df_lists = []
-    for file_name in get_all_midi_dir(root_dir = './groove/'):
+    for file_name in get_all_midi_dir(root_dir = root_dir):
         midiprocessor = MidiProcessor(file_name)
-        numerator = midiprocessor.numerator
-        denominator = midiprocessor.denominator
-        if (numerator == 4) and (denominator == 4):
-            df = midiprocessor.midi_to_df()
-            df_lists.append(df)
+        # numerator = midiprocessor.numerator
+        # denominator = midiprocessor.denominator
+        # if (numerator == 4) and (denominator == 4):
+        df = midiprocessor.midi_to_df()
+        df_lists.append(df)
     df = pd.concat(df_lists).fillna(0).astype(int)
     
     loops_len_list = [len(df) for df in df_lists]
@@ -150,3 +152,25 @@ def concat_all_midi_to_df(root_dir = './groove/', return_loops_len_list=True):
         return df, loops_len_list
     else:
         return df
+
+def prepare_input(encoding_loops_list, input_window_len=16, pred_steps = 1, 
+                  overlaps = 15, train_test_split=None):
+    output_len = pred_steps + overlaps
+    X = []
+    y = []
+    for loop in encoding_loops_list:
+        for i in range(len(loop)-input_window_len-pred_steps+1):
+            input_start = i
+            input_end = i + input_window_len
+            output_start = input_end - overlaps
+            output_end = output_start + output_len
+
+            X.append(loop[input_start:input_end])
+            y.append(loop[output_start:output_end])
+    if train_test_split == None:
+        return X, y
+    else:
+        split_point = int(len(X)*train_test_split)
+        X_train, y_train = X[:-split_point], y[:-split_point]
+        X_test, y_test = X[-split_point:], y[-split_point:]
+        return X_train, y_train, X_test, y_test

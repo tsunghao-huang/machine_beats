@@ -36,47 +36,72 @@ class MidiProcessor:
         
         return df
     
-def encode_midi_df(df, loops_len_list=None, max_instruments=None):
+def prepare_data(df, input_window_len=32, pred_steps=1, overlaps=0, train_test_split=None,
+                  tracks_len_list=None, max_instruments=None):
     '''
-    loops_len_list: if the provided df is a concatenation of several midis, 
-        a list of loops length should be provided to segment encoding results
+    tracks_len_list: if the provided df is a concatenation of several midis, 
+        a list of tracks length should be provided to segment encoding results
     max_instruments: Some percussion instruments are not that frequently appear, 
         one can set the maximum instruments to lower the complexity.
     '''
-
+    
+    # choose top max_instruments
     if max_instruments != None:
         most_frequent_inst = sorted(df.sum().to_dict().items(), key=lambda kv: kv[1], reverse=True)
         most_frequent_inst = [instrument[0] for instrument in most_frequent_inst][0:max_instruments]
         df = df[most_frequent_inst]
-    
     df = df.reset_index(drop=True)
+    # remember the encoding scheme
+    instruments = df.columns.tolist()
+    
+    def split_tracks(df_values, tracks_len_list=tracks_len_list):
+        print('split started!')
+        segment_indices = [sum(tracks_len_list[:i]) for i in range(len(tracks_len_list) + 1)]
+        encoded_tracks_list = [df_values[segment_indices[i]:segment_indices[i+1],:] for i in range(len(segment_indices)-1)]
+        
+        print('split finished', np.array(encoded_tracks_list).shape)
+        return encoded_tracks_list
+    
+    def get_Xy(df_values, input_window_len=input_window_len, 
+                      pred_steps=pred_steps, overlaps=overlaps):
+        X = []
+        y = []
+        for i in range(len(df_values)-input_window_len-pred_steps+1):
+            input_start = i
+            input_end = i + input_window_len
+            output_start = input_end - overlaps
+            output_end = output_start + overlaps + pred_steps
 
-    columns_v = df.columns.tolist()
-    encoding_list = df.values*columns_v
-    encoding_list = [list(n[n > 0]) for n in encoding_list]
-    unique_note = [list(n) for n in set(tuple(n) for n in encoding_list)]
-    encoding_dict = {key: value for key, value in enumerate(unique_note)}
+            X.append(df_values[input_start:input_end])
+            y.append(df_values[output_start:output_end])
+        
+        y = list(np.array(y).reshape(-1, np.array(y).shape[-1]))
+        return X, y
 
-    def encode_by_dict(encoding_dict, value):
-
-        items_list = encoding_dict.items()
-        for item in items_list:
-            if item[1] == value:
-                key = item[0]
-                break
-        return key
-
-    encoding_result = np.array([encode_by_dict(encoding_dict,n) for n in encoding_list])
-    if loops_len_list == None:
-        return encoding_result, encoding_dict
+    if tracks_len_list == None:
+        X, y = get_Xy(df.values)
     else:
-        segment_indices = [sum(loops_len_list[:i]) for i in range(len(loops_len_list) + 1)]
-        encoding_result = [encoding_result[segment_indices[i]:segment_indices[i+1]] for i in range(len(segment_indices)-1)]
-        return encoding_result, encoding_dict
+        encoded_tracks_list = split_tracks(df.values, tracks_len_list=tracks_len_list)
+        X_list = []
+        y_list = []
+        for track in encoded_tracks_list:
+            X, y = get_Xy(track)
+            X_list.append(X)
+            y_list.append(y)
+        X = np.concatenate(X_list, axis=0)
+        y = np.concatenate(y_list, axis=0)
 
-def array_to_midi(encoding_array, encoding_dict, bpm=120):
+    if train_test_split == None:
+        return X, y, instruments
+    else:
+        split_point = int(len(X)*train_test_split)
+        X_train, y_train = X[:-split_point], y[:-split_point]
+        X_test, y_test = X[-split_point:], y[-split_point:]
+        return X_train, y_train, X_test, y_test, instruments
+
+def array_to_midi(encoding_array, instruments_list, bpm=180):
     new_song = MidiFile()
-    new_song.ticks_per_beat = 240
+    new_song.ticks_per_beat = 960
     meta_track = MidiTrack()
     new_song.tracks.append(meta_track)
 
@@ -90,33 +115,36 @@ def array_to_midi(encoding_array, encoding_dict, bpm=120):
     drum_track = MidiTrack()
     new_song.tracks.append(drum_track)
 
-    decoding_list = [encoding_dict[i] for i in encoding_array]
+    ticks_per_32note = 120
 
-    ticks_per_32note = 30
-    time_list = []
-
-    for time_index, note in enumerate(decoding_list):
-        if len(note) > 0:
-            time_list.append(time_index)
-
-            if len(time_list) <= 1:
-                notes_from_last_message = 0
-
-            else:
-                notes_from_last_message = time_list[-1] - time_list[-2]
-
-            for index, instrument in enumerate(note):
-                if index == 0:
-                    drum_track.append(Message('note_on', channel=9, note=instrument, velocity=60, 
-                                                time=notes_from_last_message*ticks_per_32note))
-
-                else:
-                    drum_track.append(Message('note_on', channel=9, note=instrument, velocity=60, time=0))
-        else:
+    time_indices = []
+    for i, note in enumerate(encoding_array*instruments_list):
+        if sum(note) == 0:
             pass
+        else:
+            time_indices.append(i)
+
+            if len(time_indices) <= 1:
+                notes_from_last_message = 0
+            else:
+                notes_from_last_message = time_indices[-1] - time_indices[-2]
+
+            same_note_count = 0
+            for inst in note:
+
+                if inst == 0:
+                    pass
+                elif same_note_count == 0:
+                    drum_track.append(Message('note_on', channel=9, note=inst, velocity=80,
+                                              time=notes_from_last_message*ticks_per_32note))
+                    same_note_count += 1
+                else:
+                    drum_track.append(Message('note_on', channel=9, note=inst, velocity=80,
+                                              time=0))
+                    same_note_count += 1
     return new_song
 
-def concat_all_midi_to_df(root_dir = './groove/', return_loops_len_list=True):
+def concat_all_midi_to_df(root_dir, return_tracks_len_list=True):
 
     def get_all_midi_dir(root_dir = root_dir):
         all_midi = []
@@ -138,35 +166,13 @@ def concat_all_midi_to_df(root_dir = './groove/', return_loops_len_list=True):
         df_lists.append(df)
     df = pd.concat(df_lists).fillna(0).astype(int)
     
-    loops_len_list = [len(df) for df in df_lists]
+    tracks_len_list = [len(df) for df in df_lists]
     print("{} drum loops".format(len(df_lists)))
     print("{} percussion instruments".format(len(df.columns)))
     print("{} 32-notes".format(len(df)))
 
 
-    if return_loops_len_list:
-        return df, loops_len_list
+    if return_tracks_len_list:
+        return df, tracks_len_list
     else:
         return df
-
-def prepare_input(encoding_loops_list, input_window_len=16, pred_steps = 1, 
-                  overlaps = 15, train_test_split=None):
-    output_len = pred_steps + overlaps
-    X = []
-    y = []
-    for loop in encoding_loops_list:
-        for i in range(len(loop)-input_window_len-pred_steps+1):
-            input_start = i
-            input_end = i + input_window_len
-            output_start = input_end - overlaps
-            output_end = output_start + output_len
-
-            X.append(loop[input_start:input_end])
-            y.append(loop[output_start:output_end])
-    if train_test_split == None:
-        return X, y
-    else:
-        split_point = int(len(X)*train_test_split)
-        X_train, y_train = X[:-split_point], y[:-split_point]
-        X_test, y_test = X[-split_point:], y[-split_point:]
-        return X_train, y_train, X_test, y_test

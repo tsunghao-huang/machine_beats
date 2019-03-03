@@ -8,19 +8,19 @@ class MidiProcessor:
     def __init__(self, midi_dir):
         
         self.midi_dir = midi_dir
-#        self.meta_track = MidiFile(self.midi_dir).tracks[0]
-        
-        # adjust to read midi that has no meta_message
-        self.main_track = MidiFile(self.midi_dir).tracks[0]
-#        self.meta_ind = [i for i, m in enumerate(self.meta_track) if 'numerator' in m.dict()][0]
-#        self.numerator = self.meta_track[self.meta_ind].numerator
-#        self.denominator = self.meta_track[self.meta_ind].denominator
-        self.ticks_per_beat = MidiFile(self.midi_dir).ticks_per_beat
+        self.midi = MidiFile(self.midi_dir)
+        self.drum_track_ind = [i for i in range(len(self.midi.tracks)) if self.midi.tracks[i][0].channel == 9][0]
+#         self.meta_track = MidiFile(self.midi_dir).tracks[0]
+        self.drum_track = self.midi.tracks[self.drum_track_ind]
+#         self.meta_ind = [i for i, m in enumerate(self.meta_track) if 'numerator' in m.dict()][0]
+#         self.numerator = self.meta_track[self.meta_ind].numerator
+#         self.denominator = self.meta_track[self.meta_ind].denominator
+        self.ticks_per_beat = self.midi.ticks_per_beat
         self.ticks_per_32nt = self.ticks_per_beat/8
         
     def midi_to_df(self):
         
-        df = pd.DataFrame([m.dict() for m in self.main_track])
+        df = pd.DataFrame([m.dict() for m in self.drum_track])
         
         # get time passed since the first message and quantize
         df.time = [round(sum(df.time[0:i])/self.ticks_per_32nt) for i in range(1, len(df)+1)]
@@ -28,12 +28,8 @@ class MidiProcessor:
         df = df.pivot_table(index='time', columns='note', values='velocity', fill_value=0)
 
         # Fill empty notes
-        last_note = max(df.index)
-        empty_notes_index = [i for i in range(last_note) if i not in df.index]
+        df = df.reindex(pd.RangeIndex(df.index.max()+1)).fillna(0).sort_index()
 
-        for i in empty_notes_index:
-            df.loc[i] = np.zeros(len(df.columns)).astype(int)
-        df = df.sort_index()
         # if velocity > 0, change it to 1
         df = (df > 0).astype(int)
         df.columns = df.columns.astype(int)
@@ -90,9 +86,9 @@ def array_to_midi(encoding_array, encoding_dict, bpm=120):
                                     clocks_per_click=24, notated_32nd_notes_per_beat=8, time=0))
     meta_track.append(MetaMessage(type='set_tempo', tempo=bpm2tempo(bpm), time=0))
 
-    # main_track
-    main_track = MidiTrack()
-    new_song.tracks.append(main_track)
+    # drum_track
+    drum_track = MidiTrack()
+    new_song.tracks.append(drum_track)
 
     decoding_list = [encoding_dict[i] for i in encoding_array]
 
@@ -111,11 +107,11 @@ def array_to_midi(encoding_array, encoding_dict, bpm=120):
 
             for index, instrument in enumerate(note):
                 if index == 0:
-                    main_track.append(Message('note_on', channel=9, note=instrument, velocity=60, 
+                    drum_track.append(Message('note_on', channel=9, note=instrument, velocity=60, 
                                                 time=notes_from_last_message*ticks_per_32note))
 
                 else:
-                    main_track.append(Message('note_on', channel=9, note=instrument, velocity=60, time=0))
+                    drum_track.append(Message('note_on', channel=9, note=instrument, velocity=60, time=0))
         else:
             pass
     return new_song

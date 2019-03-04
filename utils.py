@@ -55,11 +55,10 @@ def prepare_data(df, input_window_len=32, pred_steps=1, overlaps=0, train_test_s
     instruments = df.columns.tolist()
     
     def split_tracks(df_values, tracks_len_list=tracks_len_list):
-        print('split started!')
+        
         segment_indices = [sum(tracks_len_list[:i]) for i in range(len(tracks_len_list) + 1)]
         encoded_tracks_list = [df_values[segment_indices[i]:segment_indices[i+1],:] for i in range(len(segment_indices)-1)]
         
-        print('split finished', np.array(encoded_tracks_list).shape)
         return encoded_tracks_list
     
     def get_Xy(df_values, input_window_len=input_window_len, 
